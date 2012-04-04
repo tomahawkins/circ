@@ -31,7 +31,7 @@ type Name      = String
 type CtorName  = String
 type TypeName  = String
 type TypeParam = String
-type Code      = String
+type Code      = Name -> String
 type Import    = String
 
 -- | A type expression.
