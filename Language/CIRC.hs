@@ -21,6 +21,7 @@ module Language.CIRC
 
 import Control.Monad
 import Control.Monad.State
+import Data.Function
 import Data.List
 import Text.Printf
 
@@ -68,29 +69,33 @@ circ (Spec initName imports root types transforms) = do
   codeModule :: Name -> [TypeDef] -> Maybe (Name, Transform) -> String
   codeModule name types trans = unlines $
     [ printf "module %s" name
-    , "  ( " ++ intercalate "\n  , " [ name ++ " (..)"| TypeDef name _ _ <- types ]
+    , "  ( " ++ intercalate "\n  , " [ name ++ " (..)"| TypeDef name _ _ <- types' ]
     , "  , transform"
     , "  ) where"
     , ""
     , "import Language.CIRC"
     ] ++ (case trans of { Nothing -> []; Just (m, _) -> nub ["import qualified " ++ initName, "import qualified " ++ m]}) ++ imports ++
     [ ""
-    ] ++ (map codeTypeDef types) ++
+    ] ++ (map codeTypeDef types') ++
     case trans of
       Nothing ->
         [ printf "transform :: %s -> CIRC %s" root root
 	, "transform = return"
 	, ""
 	]
-      Just (name', types) ->
+      Just (name, trans) ->
         [ printf "transform :: %s.%s -> CIRC %s" initName root root
-	, printf "transform a = %s.transform a >>= trans%s" name' root
+	, printf "transform a = %s.transform a >>= trans%s" name root
 	, ""
 	]
+    where
+    types' = sortBy (compare `on` \ (TypeDef n _ _) -> n) types
 
 codeTypeDef :: TypeDef -> String
 codeTypeDef (TypeDef name params ctors) = "data " ++ name ++ " " ++ intercalate " " params ++ "\n  = " ++ 
-  intercalate "\n  | " [ name ++ " " ++ intercalate " " (map codeType args) | CtorDef name args <- ctors ] ++ "\n"
+  intercalate "\n  | " [ name ++ " " ++ intercalate " " (map codeType args) | CtorDef name args <- ctors' ] ++ "\n"
+  where
+  ctors' = sortBy (compare `on` \ (CtorDef n _) -> n) ctors
 
 codeType :: Type -> String
 codeType a = case a of
