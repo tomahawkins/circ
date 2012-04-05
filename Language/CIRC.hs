@@ -24,6 +24,7 @@ import Control.Monad
 import Control.Monad.State
 import Data.Function
 import Data.List
+import Data.Maybe
 import Text.Printf
 
 -- | A specification is a module name for the initial type, common imports, the root type, the initial type definitions, and a list of transforms.
@@ -38,7 +39,7 @@ type Code       = String
 type Import     = String
 
 -- | A type expression.
-data Type = T TypeName [Type] | TList Type | TMaybe Type | TFun Type Type | TTuple [Type]
+data Type = T TypeName [Type] | TList Type | TMaybe Type | TTuple [Type]
 
 -- | A type definition is a name, a list of type parameters, and a list of constructor definitions.
 data TypeDef = TypeDef TypeName [TypeParam] [CtorDef]
@@ -107,7 +108,6 @@ codeType a = case a of
   T name params -> "(" ++ name ++ intercalate " " (map codeType params) ++ ")"
   TList  a      -> "[" ++ codeType a ++ "]"
   TMaybe a      -> "(Maybe " ++ codeType a ++ ")"
-  TFun   a b    -> "(" ++ codeType a ++ " -> " ++ codeType b ++ ")"
   TTuple a      -> "(" ++ intercalate ", " (map codeType a) ++ ")"
 
 newTypes :: [TypeDef] -> [TypeDef] -> [TypeDef]
@@ -137,7 +137,27 @@ codeTypeTransforms prev types ctor code = concatMap codeTypeTransform types
   codeCtor :: CtorDef -> String
   codeCtor (CtorDef ctorName types)
     | ctorName == ctor = prev ++ "." ++ drop 2 (indent code)
-    | otherwise        = printf "%s.%s%s -> ..." prev ctorName (concat [ ' ' : v | v <- take (length types) vars ])
+    | otherwise        = printf "%s.%s%s -> do { %sreturn $ %s%s }" prev ctorName args argsImp ctorName args
+    where
+    args = concat [ ' ' : v | v <- take (length types) vars ]
+    argsImp = concat $ mapMaybe wrapArg $ zip vars types
+
+  wrapArg :: (Name, Type) -> Maybe Code
+  wrapArg a@(var, _) = codeArg a >>= return . printf "%s <- %s; " var
+
+  codeArg :: (Name, Type) -> Maybe Code
+  codeArg (var, typ) = case typ of
+    t | not $ any (flip elem [ name | TypeDef name _ _ <- types ]) $ primitiveTypes t -> Nothing
+    T t _ -> Just $ printf "trans%s %s" t var
+    _ -> Nothing --XXX
+
+-- | Returns a list of names all primitive types used in a type.
+primitiveTypes :: Type -> [TypeName]
+primitiveTypes a = case a of
+  T n _     -> [n]
+  TList t   -> primitiveTypes t
+  TMaybe t  -> primitiveTypes t
+  TTuple ts -> concatMap primitiveTypes ts
 
 -- | Indents code with 2 spaces.
 indent :: String -> String
