@@ -1,6 +1,8 @@
 -- | Compiler IR Compiler (CIRC): A language for specifying compiler intermediate representations.
 module Language.CIRC
-  ( Spec      (..)
+  ( 
+  -- * CIRC Specifications
+    Spec      (..)
   , Transform (..)
   , Type      (..)
   , TypeDef   (..)
@@ -11,20 +13,21 @@ module Language.CIRC
   , TypeParam
   , Code
   , t
+  , indent
+  -- * CIRC Compilation
   , circ
+  -- * Runtime Utilities
   , CIRC
   , evalCIRC
   , runCIRC
   , Id
   , newId
-  , indent
   ) where
 
 import Control.Monad
 import Control.Monad.State
 import Data.Function
 import Data.List
-import Data.Maybe
 import Text.Printf
 
 -- | A specification is a module name for the initial type, common imports, the root type, the initial type definitions, and a list of transforms.
@@ -128,7 +131,7 @@ codeTypeTransforms prev types ctor code = concatMap codeTypeTransform types
   where
   vars = map (: []) ['a' .. 'z']
   codeTypeTransform :: TypeDef -> String
-  codeTypeTransform (TypeDef name params ctors) = unlines $ 
+  codeTypeTransform (TypeDef name _params ctors) = unlines $ -- XXX What do we do with type params?
     [ printf "trans%s :: %s.%s -> CIRC %s" name prev name name
     , printf "trans%s a = case a of" name
     , indent $ unlines $ map codeCtor ctors
@@ -136,22 +139,28 @@ codeTypeTransforms prev types ctor code = concatMap codeTypeTransform types
 
   codeCtor :: CtorDef -> String
   codeCtor (CtorDef ctorName types)
-    | ctorName == ctor = prev ++ "." ++ drop 2 (indent code)
-    | otherwise        = printf "%s.%s%s -> do { %sreturn $ %s%s }" prev ctorName args argsImp ctorName args
+    | ctorName == ctor = "\n{- Transform Begin -}\n" ++ prev ++ "." ++ drop 2 (indent code) ++ "{- Transform End -}\n"
+    | otherwise        = printf "%s.%s%s -> do { %sreturn $ %s%s }" prev ctorName args (impArgs types) ctorName args
     where
     args = concat [ ' ' : v | v <- take (length types) vars ]
-    argsImp = concat $ mapMaybe wrapArg $ zip vars types
 
-  wrapArg :: (Name, Type) -> Maybe Code
-  wrapArg a@(var, _) = codeArg a >>= return . printf "%s <- %s; " var
+  impArgs :: [Type] -> Code
+  impArgs types = concatMap wrapArg $ zip vars types
 
-  codeArg :: (Name, Type) -> Maybe Code
-  codeArg (var, typ) = case typ of
-    t | not $ any (flip elem [ name | TypeDef name _ _ <- types ]) $ primitiveTypes t -> Nothing
-    T t _ -> Just $ printf "trans%s %s" t var
-    _ -> Nothing --XXX
+  wrapArg :: (Name, Type) -> Code
+  wrapArg (var, typ) = printf "%s <- %s %s; " var (codeArg typ) var
 
--- | Returns a list of names all primitive types used in a type.
+  codeArg :: Type -> Code
+  codeArg typ = case typ of
+    t | not $ any (flip elem [ name | TypeDef name _ _ <- types ]) $ primitiveTypes t -> "return"
+    T t _     -> printf "trans%s" t
+    TList  t  -> printf "mapM (%s)" $ codeArg t 
+    TMaybe t  -> printf "(\\ a -> case a of { Nothing -> return Nothing; Just a -> do { a <- %s a; return $ Just $ a } })" $ codeArg t
+    TTuple ts -> printf "(\\ (%s) -> do { %sreturn (%s) })" args (impArgs ts) args
+      where
+      args = intercalate ", " $ take (length ts) vars
+
+-- | Returns a list of names of all primitive types used in a type.
 primitiveTypes :: Type -> [TypeName]
 primitiveTypes a = case a of
   T n _     -> [n]
