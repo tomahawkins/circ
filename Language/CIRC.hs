@@ -17,6 +17,7 @@ module Language.CIRC
   , runCIRC
   , Id
   , newId
+  , indent
   ) where
 
 import Control.Monad
@@ -28,12 +29,13 @@ import Text.Printf
 -- | A specification is a module name for the initial type, common imports, the root type, the initial type definitions, and a list of transforms.
 data Spec = Spec Name [Import] TypeName [TypeDef] [Transform]
 
-type Name      = String
-type CtorName  = String
-type TypeName  = String
-type TypeParam = String
-type Code      = Name -> String
-type Import    = String
+type Name       = String
+type ModuleName = String
+type CtorName   = String
+type TypeName   = String
+type TypeParam  = String
+type Code       = String
+type Import     = String
 
 -- | A type expression.
 data Type = T TypeName [Type] | TList Type | TMaybe Type | TFun Type Type | TTuple [Type]
@@ -46,7 +48,7 @@ data CtorDef = CtorDef CtorName [Type]
 
 -- | A transform is a module name, the constructor to be transformed, a list of new type definitions,
 --   and the implementation (imports and code).
-data Transform = Transform Name CtorName [TypeDef] [Import] Code  -- name, removed ctor, new types or ctors, transform code.
+data Transform = Transform Name CtorName [TypeDef] [Import] (ModuleName -> Code)
 
 -- | An unparameterized type.
 t :: String -> Type
@@ -54,42 +56,44 @@ t n = T n []
 
 -- | Compiles a CIRC spec.
 circ :: Spec -> IO ()
-circ (Spec initName imports root types transforms) = do
-  writeFile (initName ++ ".hs") $ codeModule initName types Nothing
-  foldM_ codeTransform (initName, types) transforms
+circ (Spec initModuleName commonImports rootTypeName types transforms) = do
+  writeFile (initModuleName ++ ".hs") $ codeModule' initModuleName types Nothing
+  foldM_ codeTransform (initModuleName, types) transforms
   where
+  codeModule' = codeModule initModuleName commonImports rootTypeName
   codeTransform :: (Name, [TypeDef]) -> Transform -> IO (Name, [TypeDef])
-  codeTransform (name', types) trans@(Transform name ctorName types' _ _) = do
-    writeFile (name ++ ".hs") $ codeModule name types'' $ Just (name', trans)
-    return (name, types'')
+  codeTransform (prevName, prevTypes) (Transform currName ctorName typeMods localImports code) = do
+    writeFile (currName ++ ".hs") $ codeModule' currName currTypes $ Just (prevName, localImports, prevTypes, ctorName, code prevName)
+    return (currName, currTypes)
     where
-    filteredCtor = [ TypeDef name params [ CtorDef ctorName' args | CtorDef ctorName' args <- ctors, ctorName /= ctorName' ] | TypeDef name params ctors <- types ]
-    types'' = newTypes filteredCtor types'
+    filteredCtor = [ TypeDef name params [ CtorDef ctorName' args | CtorDef ctorName' args <- ctors, ctorName /= ctorName' ] | TypeDef name params ctors <- prevTypes ]
+    currTypes = newTypes filteredCtor typeMods
 
-  codeModule :: Name -> [TypeDef] -> Maybe (Name, Transform) -> String
-  codeModule name types trans = unlines $
-    [ printf "module %s" name
-    , "  ( " ++ intercalate "\n  , " [ name ++ " (..)"| TypeDef name _ _ <- types' ]
-    , "  , transform"
-    , "  ) where"
-    , ""
-    , "import Language.CIRC"
-    ] ++ (case trans of { Nothing -> []; Just (m, _) -> nub ["import qualified " ++ initName, "import qualified " ++ m]}) ++ imports ++
-    [ ""
-    ] ++ (map codeTypeDef types') ++
-    case trans of
-      Nothing ->
-        [ printf "transform :: %s -> CIRC %s" root root
-	, "transform = return"
-	, ""
-	]
-      Just (name, trans) ->
-        [ printf "transform :: %s.%s -> CIRC %s" initName root root
-	, printf "transform a = %s.transform a >>= trans%s" name root
-	, ""
-	]
-    where
-    types' = sortBy (compare `on` \ (TypeDef n _ _) -> n) types
+codeModule :: ModuleName -> [String] -> TypeName -> ModuleName -> [TypeDef] -> Maybe (ModuleName, [Import], [TypeDef], CtorName, Code) -> String
+codeModule initModuleName commonImports rootTypeName moduleName unsortedTypes trans = unlines $
+  [ printf "module %s" moduleName
+  , "  ( " ++ intercalate "\n  , " [ name ++ " (..)"| TypeDef name _ _ <- types ]
+  , "  , transform"
+  , "  ) where"
+  , ""
+  , "import Language.CIRC"
+  ] ++ nub (commonImports ++ case trans of { Nothing -> []; Just (m, i, _, _, _) -> ["import qualified " ++ initModuleName, "import qualified " ++ m] ++ i}) ++
+  [ ""
+  ] ++ (map codeTypeDef types) ++
+  case trans of
+    Nothing ->
+      [ printf "transform :: %s -> CIRC %s" rootTypeName rootTypeName
+      , "transform = return"
+      , ""
+      ]
+    Just (prev, _, types, ctor, code) ->
+      [ printf "transform :: %s.%s -> CIRC %s" initModuleName rootTypeName rootTypeName
+      , printf "transform a = %s.transform a >>= trans%s" moduleName rootTypeName
+      , ""
+      , codeTypeTransforms prev types ctor code
+      ]
+  where
+  types = sortBy (compare `on` \ (TypeDef n _ _) -> n) unsortedTypes
 
 codeTypeDef :: TypeDef -> String
 codeTypeDef (TypeDef name params ctors) = "data " ++ name ++ " " ++ intercalate " " params ++ "\n  = " ++ 
@@ -118,6 +122,26 @@ newType old new@(TypeDef name params ctors) = case match of
   _ -> error $ "Duplicate type names: " ++ name
   where
   (match, rest) = partition (\ (TypeDef name' _ _) -> name' == name) old
+
+codeTypeTransforms :: ModuleName -> [TypeDef] -> CtorName -> String -> String
+codeTypeTransforms prev types ctor code = concatMap codeTypeTransform types
+  where
+  vars = map (: []) ['a' .. 'z']
+  codeTypeTransform :: TypeDef -> String
+  codeTypeTransform (TypeDef name params ctors) = unlines $ 
+    [ printf "trans%s :: %s.%s -> CIRC %s" name prev name name
+    , printf "trans%s a = case a of" name
+    , indent $ unlines $ map codeCtor ctors
+    ]
+
+  codeCtor :: CtorDef -> String
+  codeCtor (CtorDef ctorName types)
+    | ctorName == ctor = prev ++ "." ++ drop 2 (indent code)
+    | otherwise        = printf "%s.%s%s -> ..." prev ctorName (concat [ ' ' : v | v <- take (length types) vars ])
+
+-- | Indents code with 2 spaces.
+indent :: String -> String
+indent = unlines . map ("  " ++) . lines
 
 -- | The CIRC transform monad.  Used to create fresh ids.
 type CIRC = State Int
