@@ -14,6 +14,7 @@ library
   build-depends:   base,
                    mtl 
   exposed-modules: Language.CIRC
+                   Language.CIRC.Runtime
   extensions:
   ghc-options:    -W
 
