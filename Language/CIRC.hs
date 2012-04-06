@@ -139,12 +139,13 @@ nextTypes old new = sortTypeDefs $ foldl nextType old new
       [TypeDef _ params ctors] -> TypeDef typeName params (ctorDef : ctors) : rest
       where
       (match, rest) = partition (\ (TypeDef name _ _) -> name == typeName) types
-  
+
 codeTypeTransforms :: ModuleName -> [TypeDef] -> [TypeDef] -> (CtorName, Code) -> [(CtorName, Code)] -> String
 codeTypeTransforms prevName prevTypes currTypes forwardTrans backwardTrans =
   concatMap (codeTypeTransform prevTypes [forwardTrans] (\ t -> "trans" ++ t)        qualified id) prevTypes ++
-  concatMap (codeTypeTransform currTypes backwardTrans  (\ t -> "trans" ++ t ++ "'") id qualified) currTypes
+  concatMap (codeTypeTransform currTypes backwardTrans  (\ t -> "trans" ++ t ++ "'") id qualified) [ t | t@(TypeDef n _ _) <- currTypes, elem n $ map typeDefName prevTypes ]
   where
+  typeDefName (TypeDef n _ _) = n
   qualified :: String -> String
   qualified a = prevName ++ "." ++ a
   vars = map (: []) ['a' .. 'z']
