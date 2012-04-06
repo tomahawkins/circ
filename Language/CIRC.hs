@@ -2,11 +2,12 @@
 module Language.CIRC
   ( 
   -- * CIRC Specifications
-    Spec      (..)
-  , Transform (..)
-  , Type      (..)
-  , TypeDef   (..)
-  , CtorDef   (..)
+    Spec           (..)
+  , Transform      (..)
+  , Type           (..)
+  , TypeDef        (..)
+  , CtorDef        (..)
+  , TypeRefinement (..)
   , Name
   , CtorName
   , TypeName
@@ -50,9 +51,14 @@ data TypeDef = TypeDef TypeName [TypeParam] [CtorDef]
 -- | A constructor definition is a name and a list of type arguments.
 data CtorDef = CtorDef CtorName [Type]
 
+-- | A type refinement.
+data TypeRefinement
+  = NewCtor TypeName CtorDef (ModuleName -> Code)
+  | NewType TypeDef
+
 -- | A transform is a module name, the constructor to be transformed, a list of new type definitions,
 --   and the implementation (imports and code).
-data Transform = Transform Name CtorName [TypeDef] [Import] (ModuleName -> Code)
+data Transform = Transform ModuleName [Import] CtorName (ModuleName -> Code) [TypeRefinement]
 
 -- | An unparameterized type.
 t :: String -> Type
@@ -66,38 +72,48 @@ circ (Spec initModuleName commonImports rootTypeName types transforms) = do
   where
   codeModule' = codeModule initModuleName commonImports rootTypeName
   codeTransform :: (Name, [TypeDef]) -> Transform -> IO (Name, [TypeDef])
-  codeTransform (prevName, prevTypes) (Transform currName ctorName typeMods localImports code) = do
-    writeFile (currName ++ ".hs") $ codeModule' currName currTypes $ Just (prevName, localImports, prevTypes, ctorName, code prevName)
+  codeTransform (prevName, prevTypes) (Transform currName localImports ctorName code typeMods) = do
+    writeFile (currName ++ ".hs") $ codeModule' currName currTypes $ Just (prevName, localImports, prevTypes, ctorName, code prevName, [ (ctor, code prevName)| NewCtor _ (CtorDef ctor _) code <- typeMods ])
     return (currName, currTypes)
     where
     filteredCtor = [ TypeDef name params [ CtorDef ctorName' args | CtorDef ctorName' args <- ctors, ctorName /= ctorName' ] | TypeDef name params ctors <- prevTypes ]
-    currTypes = newTypes filteredCtor typeMods
+    currTypes = nextTypes filteredCtor typeMods
 
-codeModule :: ModuleName -> [String] -> TypeName -> ModuleName -> [TypeDef] -> Maybe (ModuleName, [Import], [TypeDef], CtorName, Code) -> String
+codeModule :: ModuleName -> [String] -> TypeName -> ModuleName -> [TypeDef] -> Maybe (ModuleName, [Import], [TypeDef], CtorName, Code, [(CtorName, Code)]) -> String
 codeModule initModuleName commonImports rootTypeName moduleName unsortedTypes trans = unlines $
   [ printf "module %s" moduleName
-  , "  ( " ++ intercalate "\n  , " [ name ++ " (..)"| TypeDef name _ _ <- types ]
+  , "  ( " ++ intercalate "\n  , " [ name ++ " (..)"| TypeDef name _ _ <- currTypes ]
   , "  , transform"
+  , "  , transform'"
   , "  ) where"
   , ""
   , "import Language.CIRC"
-  ] ++ nub (commonImports ++ case trans of { Nothing -> []; Just (m, i, _, _, _) -> ["import qualified " ++ initModuleName, "import qualified " ++ m] ++ i}) ++
+  ] ++ nub (commonImports ++ case trans of { Nothing -> []; Just (m, i, _, _, _, _) -> ["import qualified " ++ initModuleName, "import qualified " ++ m] ++ i}) ++
   [ ""
-  ] ++ (map codeTypeDef types) ++
+  ] ++ (map codeTypeDef currTypes) ++
   case trans of
     Nothing ->
-      [ printf "transform :: %s -> CIRC %s" rootTypeName rootTypeName
-      , "transform = return"
+      [ printf "transform :: %s -> CIRC (%s, [%s])" rootTypeName rootTypeName rootTypeName
+      , "transform a = return (a, [a])"
+      , ""
+      , printf "transform' :: %s -> %s" rootTypeName rootTypeName
+      , "transform = id"
       , ""
       ]
-    Just (prev, _, types, ctor, code) ->
-      [ printf "transform :: %s.%s -> CIRC %s" initModuleName rootTypeName rootTypeName
-      , printf "transform a = %s.transform a >>= trans%s" moduleName rootTypeName
-      , ""
-      , codeTypeTransforms prev types ctor code
+    Just (prevName, _, prevTypes, ctor, code, backwards) ->
+      [ printf "transform :: %s.%s -> CIRC (%s, [%s.%s])" initModuleName rootTypeName rootTypeName initModuleName rootTypeName
+      , printf "transform a = do"
+      , printf "  (a, b) <- %s.transform a" moduleName
+      , printf "  a <- trans%s a" rootTypeName
+      , printf "  return (a, b ++ [transform' a]"
+      , printf ""
+      , printf "transform' :: %s -> %s.%s" rootTypeName initModuleName rootTypeName
+      , printf "transform' = %s.transform' . trans%s'" prevName rootTypeName
+      , printf ""
+      , codeTypeTransforms prevName prevTypes currTypes ctor code backwards
       ]
   where
-  types = sortBy (compare `on` \ (TypeDef n _ _) -> n) unsortedTypes
+  currTypes = sortBy (compare `on` \ (TypeDef n _ _) -> n) unsortedTypes
 
 codeTypeDef :: TypeDef -> String
 codeTypeDef (TypeDef name params ctors) = "data " ++ name ++ " " ++ intercalate " " params ++ "\n  = " ++ 
@@ -113,50 +129,51 @@ codeType a = case a of
   TMaybe a      -> "(Maybe " ++ codeType a ++ ")"
   TTuple a      -> "(" ++ intercalate ", " (map codeType a) ++ ")"
 
-newTypes :: [TypeDef] -> [TypeDef] -> [TypeDef]
-newTypes old new = foldl newType old new
-
-newType :: [TypeDef] -> TypeDef -> [TypeDef]
-newType old new@(TypeDef name params ctors) = case match of
-  [] -> new : old
-  [TypeDef _ params' ctors']
-    | params /= params' -> error $ "Type " ++ name ++ " parameter mismatch."
-    | otherwise         -> TypeDef name params (ctors' ++ ctors) : rest
-  _ -> error $ "Duplicate type names: " ++ name
+-- | Computes the next type definitions given a list of type definitions and a list of type refinements.
+nextTypes :: [TypeDef] -> [TypeRefinement] -> [TypeDef]
+nextTypes old new = foldl nextType old new
   where
-  (match, rest) = partition (\ (TypeDef name' _ _) -> name' == name) old
-
-codeTypeTransforms :: ModuleName -> [TypeDef] -> CtorName -> String -> String
-codeTypeTransforms prev types ctor code = concatMap codeTypeTransform types
+  nextType :: [TypeDef] -> TypeRefinement -> [TypeDef]
+  nextType types refinement = case refinement of
+    NewType t -> t : types
+    NewCtor typeName ctorDef _ -> case match of
+      [] -> error $ "Type not found: " ++ typeName 
+      _ : _ : _ -> error $ "Redundent type name: " ++ typeName
+      [TypeDef _ params ctors] -> TypeDef typeName params (ctorDef : ctors) : rest
+      where
+      (match, rest) = partition (\ (TypeDef name _ _) -> name == typeName) types
+  
+codeTypeTransforms :: ModuleName -> [TypeDef] -> [TypeDef] -> CtorName -> Code -> [(CtorName, Code)] -> String
+codeTypeTransforms prevName prevTypes currTypes ctor code backwards = concatMap codeTypeTransform prevTypes
   where
   vars = map (: []) ['a' .. 'z']
   codeTypeTransform :: TypeDef -> String
   codeTypeTransform (TypeDef name _params ctors) = unlines $ -- XXX What do we do with type params?
-    [ printf "trans%s :: %s.%s -> CIRC %s" name prev name name
+    [ printf "trans%s :: %s.%s -> CIRC %s" name prevName name name
     , printf "trans%s a = case a of" name
-    , indent $ unlines $ map codeCtor ctors
+    , indent $ unlines $ map (codeCtor ctor code prevTypes) ctors
     ]
 
-  codeCtor :: CtorDef -> String
-  codeCtor (CtorDef ctorName types)
-    | ctorName == ctor = "\n{- Transform Begin -}\n" ++ prev ++ "." ++ drop 2 (indent code) ++ "{- Transform End -}\n"
-    | otherwise        = printf "%s.%s%s -> do { %sreturn $ %s%s }" prev ctorName args (impArgs types) ctorName args
+  codeCtor :: CtorName -> Code -> [TypeDef] -> CtorDef -> String
+  codeCtor targetCtorName code types (CtorDef ctorName ctorArgs)
+    | ctorName == targetCtorName = "\n{- Transform Begin -}\n" ++ prevName ++ "." ++ drop 2 (indent code) ++ "{- Transform End -}\n"
+    | otherwise                  = printf "%s.%s%s -> do { %sreturn $ %s%s }" prevName ctorName args (impArgs types ctorArgs) ctorName args
     where
-    args = concat [ ' ' : v | v <- take (length types) vars ]
+    args = concat [ ' ' : v | v <- take (length ctorArgs) vars ]
 
-  impArgs :: [Type] -> Code
-  impArgs types = concatMap wrapArg $ zip vars types
+  impArgs :: [TypeDef] -> [Type] -> Code
+  impArgs typeDefs types = concatMap (wrapArg typeDefs) $ zip vars types
 
-  wrapArg :: (Name, Type) -> Code
-  wrapArg (var, typ) = printf "%s <- %s %s; " var (codeArg typ) var
+  wrapArg :: [TypeDef] -> (Name, Type) -> Code
+  wrapArg types (var, typ) = printf "%s <- %s %s; " var (codeArg types typ) var
 
-  codeArg :: Type -> Code
-  codeArg typ = case typ of
+  codeArg :: [TypeDef] -> Type -> Code
+  codeArg types typ = case typ of
     t | not $ any (flip elem [ name | TypeDef name _ _ <- types ]) $ primitiveTypes t -> "return"
     T t _     -> printf "trans%s" t
-    TList  t  -> printf "mapM (%s)" $ codeArg t 
-    TMaybe t  -> printf "(\\ a -> case a of { Nothing -> return Nothing; Just a -> do { a <- %s a; return $ Just $ a } })" $ codeArg t
-    TTuple ts -> printf "(\\ (%s) -> do { %sreturn (%s) })" args (impArgs ts) args
+    TList  t  -> printf "mapM (%s)" $ codeArg types t 
+    TMaybe t  -> printf "(\\ a -> case a of { Nothing -> return Nothing; Just a -> do { a <- %s a; return $ Just $ a } })" $ codeArg types t
+    TTuple ts -> printf "(\\ (%s) -> do { %sreturn (%s) })" args (impArgs types ts) args
       where
       args = intercalate ", " $ take (length ts) vars
 
