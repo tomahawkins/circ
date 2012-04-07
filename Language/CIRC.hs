@@ -22,6 +22,8 @@ module Language.CIRC
 import Control.Monad
 import Data.Function
 import Data.List
+import System.Directory
+import System.IO
 import Text.Printf
 
 -- | A specification is a module name for the initial type, common imports, the root type, the initial type definitions, and a list of transforms.
@@ -60,17 +62,31 @@ t n = T n []
 -- | Compiles a CIRC spec.
 circ :: Spec -> IO ()
 circ (Spec initModuleName initImports rootTypeName types transforms) = do
-  writeFile (initModuleName ++ ".hs") $ codeModule' initModuleName types Nothing
+  maybeWriteFile (initModuleName ++ ".hs") $ codeModule' initModuleName types Nothing
   foldM_ codeTransform (initModuleName, types) transforms
   where
   codeModule' = codeModule initModuleName initImports rootTypeName
   codeTransform :: (Name, [TypeDef]) -> Transform -> IO (Name, [TypeDef])
   codeTransform (prevName, prevTypes) (Transform currName localImports ctorName code typeMods) = do
-    writeFile (currName ++ ".hs") $ codeModule' currName currTypes $ Just (prevName, localImports, prevTypes, ctorName, code prevName, [ (ctor, code prevName)| NewCtor _ (CtorDef ctor _) code <- typeMods ])
+    maybeWriteFile (currName ++ ".hs") $ codeModule' currName currTypes $ Just (prevName, localImports, prevTypes, ctorName, code prevName, [ (ctor, code prevName)| NewCtor _ (CtorDef ctor _) code <- typeMods ])
     return (currName, currTypes)
     where
     filteredCtor = [ TypeDef name params [ CtorDef ctorName' args | CtorDef ctorName' args <- ctors, ctorName /= ctorName' ] | TypeDef name params ctors <- prevTypes ]
     currTypes = filterRelevantTypes rootTypeName $ nextTypes filteredCtor typeMods
+
+  maybeWriteFile :: FilePath -> String -> IO ()
+  maybeWriteFile file contents = do
+    a <- doesFileExist file
+    if not a then writeFile file contents else do
+      f <- openFile file ReadMode
+      contents' <- hGetContents f
+      if contents' == contents
+        then do
+          hClose f
+          return ()
+        else do
+          hClose f
+          writeFile file contents
 
 sortTypeDefs :: [TypeDef] -> [TypeDef]
 sortTypeDefs = sortBy (compare `on` \ (TypeDef n _ _) -> n)

@@ -12,7 +12,9 @@ cabal-version:       >= 1.8
 
 library
   build-depends:   base,
-                   mtl 
+                   mtl,
+                   directory
+
   exposed-modules: Language.CIRC
                    Language.CIRC.Runtime
   extensions:
