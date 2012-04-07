@@ -59,24 +59,24 @@ t n = T n []
 
 -- | Compiles a CIRC spec.
 circ :: Spec -> IO ()
-circ (Spec initModuleName commonImports rootTypeName types transforms) = do
+circ (Spec initModuleName initImports rootTypeName types transforms) = do
   writeFile (initModuleName ++ ".hs") $ codeModule' initModuleName types Nothing
   foldM_ codeTransform (initModuleName, types) transforms
   where
-  codeModule' = codeModule initModuleName commonImports rootTypeName
+  codeModule' = codeModule initModuleName initImports rootTypeName
   codeTransform :: (Name, [TypeDef]) -> Transform -> IO (Name, [TypeDef])
   codeTransform (prevName, prevTypes) (Transform currName localImports ctorName code typeMods) = do
     writeFile (currName ++ ".hs") $ codeModule' currName currTypes $ Just (prevName, localImports, prevTypes, ctorName, code prevName, [ (ctor, code prevName)| NewCtor _ (CtorDef ctor _) code <- typeMods ])
     return (currName, currTypes)
     where
     filteredCtor = [ TypeDef name params [ CtorDef ctorName' args | CtorDef ctorName' args <- ctors, ctorName /= ctorName' ] | TypeDef name params ctors <- prevTypes ]
-    currTypes = nextTypes filteredCtor typeMods
+    currTypes = filterRelevantTypes rootTypeName $ nextTypes filteredCtor typeMods
 
 sortTypeDefs :: [TypeDef] -> [TypeDef]
 sortTypeDefs = sortBy (compare `on` \ (TypeDef n _ _) -> n)
 
 codeModule :: ModuleName -> [String] -> TypeName -> ModuleName -> [TypeDef] -> Maybe (ModuleName, [Import], [TypeDef], CtorName, Code, [(CtorName, Code)]) -> String
-codeModule initModuleName commonImports rootTypeName moduleName unsortedTypes trans = unlines $
+codeModule initModuleName initImports rootTypeName moduleName unsortedTypes trans = unlines $
   [ printf "module %s" moduleName
   , "  ( " ++ intercalate "\n  , " [ name ++ " (..)"| TypeDef name _ _ <- currTypes ]
   , "  , transform"
@@ -84,7 +84,7 @@ codeModule initModuleName commonImports rootTypeName moduleName unsortedTypes tr
   , "  ) where"
   , ""
   , "import Language.CIRC.Runtime"
-  ] ++ nub (commonImports ++ case trans of { Nothing -> []; Just (m, i, _, _, _, _) -> ["import qualified " ++ initModuleName, "import qualified " ++ m] ++ i}) ++
+  ] ++ nub (case trans of { Nothing -> initImports; Just (m, i, _, _, _, _) -> ["import qualified " ++ initModuleName, "import qualified " ++ m] ++ i}) ++
   [ ""
   ] ++ (map codeTypeDef currTypes) ++
   case trans of
@@ -130,7 +130,7 @@ codeType a = case a of
 nextTypes :: [TypeDef] -> [TypeRefinement] -> [TypeDef]
 nextTypes old new = sortTypeDefs $ foldl nextType old new
   where
-  nextType :: [TypeDef] -> TypeRefinement -> [TypeDef]  -- XXX Need to filter out types that are no longer used, i.e. reachable from root type.
+  nextType :: [TypeDef] -> TypeRefinement -> [TypeDef]
   nextType types refinement = case refinement of
     NewType t -> t : types
     NewCtor typeName ctorDef _ -> case match of
@@ -142,7 +142,7 @@ nextTypes old new = sortTypeDefs $ foldl nextType old new
 
 codeTypeTransforms :: ModuleName -> [TypeDef] -> [TypeDef] -> (CtorName, Code) -> [(CtorName, Code)] -> String
 codeTypeTransforms prevName prevTypes currTypes forwardTrans backwardTrans =
-  concatMap (codeTypeTransform prevTypes [forwardTrans] (\ t -> "trans" ++ t)        qualified id) prevTypes ++
+  concatMap (codeTypeTransform prevTypes [forwardTrans] (\ t -> "trans" ++ t)        qualified id) [ t | t@(TypeDef n _ _) <- prevTypes, elem n $ map typeDefName currTypes ] ++
   concatMap (codeTypeTransform currTypes backwardTrans  (\ t -> "trans" ++ t ++ "'") id qualified) [ t | t@(TypeDef n _ _) <- currTypes, elem n $ map typeDefName prevTypes ]
   where
   typeDefName (TypeDef n _ _) = n
@@ -190,4 +190,20 @@ primitiveTypes a = case a of
 -- | Indents code with 2 spaces.
 indent :: String -> String
 indent = unlines . map ("  " ++) . lines
+
+-- | Get rid of types that are not relevant to the root type.
+filterRelevantTypes :: TypeName -> [TypeDef] -> [TypeDef]
+filterRelevantTypes rootTypeName types = [ t | t@(TypeDef n _ _) <- types, elem n required ]
+  where
+  typeDeps :: TypeName -> [TypeName]
+  typeDeps name = nub $ concat [ concat [ concatMap primitiveTypes t | CtorDef _ t <- ctors ] | TypeDef n _ ctors <- types, n == name ]
+
+  required = next ([], [rootTypeName])
+
+  next :: ([TypeName], [TypeName]) -> [TypeName]
+  next (sofar, remaining) = case remaining of
+    [] -> sofar
+    a : rest
+      | elem a sofar -> next (sofar, rest)
+      | otherwise    -> next (a : sofar, rest ++ typeDeps a)
 
