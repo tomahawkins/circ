@@ -130,9 +130,10 @@ codeModule initModuleName initImports rootTypeName moduleName unsortedTypes tran
 
 codeTypeDef :: TypeDef -> String
 codeTypeDef (TypeDef name params ctors) = "data " ++ name ++ " " ++ intercalate " " params ++ "\n  = " ++ 
-  intercalate "\n  | " [ name ++ " " ++ intercalate " " (map codeType args) | CtorDef name args <- ctors' ] ++ "\n"
+  intercalate "\n  | " [ name ++ replicate (m - length name) ' ' ++ " " ++ intercalate " " (map codeType args) | CtorDef name args <- ctors' ] ++ "\n"
   where
   ctors' = sortBy (compare `on` \ (CtorDef n _) -> n) ctors
+  m = maximum [ length n | CtorDef n _ <- ctors ]
 
 codeType :: Type -> String
 codeType a = case a of
