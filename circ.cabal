@@ -1,5 +1,5 @@
 name:                circ
-version:             0.0.0
+version:             0.0.1
 synopsis:            A Compiler IR Compiler.
 description:         A Compiler IR Compiler.
 license:             BSD3
@@ -11,9 +11,9 @@ build-type:          Simple
 cabal-version:       >= 1.8
 
 library
-  build-depends:   base,
-                   mtl,
-                   directory
+  build-depends:   base      < 5.0,
+                   mtl       < 3.0,
+                   directory < 2.0
 
   exposed-modules: Language.CIRC
                    Language.CIRC.Runtime
