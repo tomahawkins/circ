@@ -1,12 +1,12 @@
 name:                circ
-version:             0.0.1
+version:             0.0.2
 synopsis:            A Compiler IR Compiler.
 description:         A Compiler IR Compiler.
 license:             BSD3
 license-file:        LICENSE
 author:              Tom Hawkins <tomahawkins@gmail.com>
 maintainer:          Tom Hawkins <tomahawkins@gmail.com>
-category:            Language, Compilers
+category:            Language, Compiler
 build-type:          Simple
 cabal-version:       >= 1.8
 

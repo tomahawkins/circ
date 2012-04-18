@@ -9,10 +9,12 @@ module Language.CIRC
   , CtorDef        (..)
   , TypeRefinement (..)
   , Name
+  , ModuleName
   , CtorName
   , TypeName
   , TypeParam
   , Code
+  , Import
   , t
   , indent
   -- * CIRC Compilation
@@ -164,7 +166,8 @@ codeTransModule initModuleName rootTypeName prevModuleName prevTypeDefs moduleNa
     , "import qualified " ++ prevModuleName ++ "Trans"
     , "import " ++ moduleName
     ] ++ imports) ++
-  [ printf "transform :: %s.%s -> CIRC (%s, [%s.%s])" initModuleName rootTypeName rootTypeName initModuleName rootTypeName
+  [ printf ""
+  , printf "transform :: %s.%s -> CIRC (%s, [%s.%s])" initModuleName rootTypeName rootTypeName initModuleName rootTypeName
   , printf "transform a = do"
   , printf "  (a, b) <- %sTrans.transform a" prevModuleName
   , printf "  a <- trans%s a" rootTypeName
