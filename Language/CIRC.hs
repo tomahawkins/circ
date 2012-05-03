@@ -55,7 +55,7 @@ data TypeRefinement
 
 -- | A transform is a module name, the constructor to be transformed, a list of new type definitions,
 --   and the implementation (imports and code).
-data Transform = Transform ModuleName [Import] [Import] CtorName (ModuleName -> Code) [TypeRefinement]
+data Transform = Transform ModuleName [Import] [Import] [(CtorName, ModuleName -> Code)] [TypeRefinement]
 
 -- | An unparameterized type.
 t :: String -> Type
@@ -71,7 +71,7 @@ circ (Spec initModuleName initImports rootTypeName typeDefsUnsorted transforms) 
   typeDefs = sortTypeDefs typeDefsUnsorted
 
   codeTransform :: (Name, [TypeDef]) -> Transform -> IO (Name, [TypeDef])
-  codeTransform (prevModuleName, prevTypeDefs) (Transform moduleName typeImports transImports ctorName transCode typeRefinements) = do
+  codeTransform (prevModuleName, prevTypeDefs) (Transform moduleName typeImports transImports removedCtors typeRefinements) = do
     maybeWriteFile (moduleName ++ ".hs") $ codeTypeModule moduleName typeImports typeDefs
     maybeWriteFile (moduleName ++ "Trans.hs") $ codeTransModule
       initModuleName
@@ -81,12 +81,11 @@ circ (Spec initModuleName initImports rootTypeName typeDefsUnsorted transforms) 
       moduleName
       transImports
       typeDefs
-      ctorName
-      (transCode prevModuleName)
+      [ (name, code prevModuleName) | (name, code) <- removedCtors ]
       [ (ctorName, transCode prevModuleName) | NewCtor _ (CtorDef ctorName _) transCode <- typeRefinements ]
     return (moduleName, typeDefs)
     where
-    filteredCtor = [ TypeDef name params [ CtorDef ctorName' args | CtorDef ctorName' args <- ctors, ctorName /= ctorName' ] | TypeDef name params ctors <- prevTypeDefs ]
+    filteredCtor = [ TypeDef name params [ CtorDef ctorName args | CtorDef ctorName args <- ctors, notElem ctorName $ fst $ unzip removedCtors ] | TypeDef name params ctors <- prevTypeDefs ]
     typeDefs = sortTypeDefs $ filterRelevantTypes rootTypeName $ nextTypes filteredCtor typeRefinements
 
 -- | Write out a file if the file doesn't exist or is different.  Doesn't bump the timestamp for Makefile-like build systems.
@@ -152,8 +151,8 @@ codeInitTransModule moduleName rootTypeName = unlines
   ]
 
 -- | Code the module that contains the IR transformations.
-codeTransModule :: ModuleName -> TypeName -> ModuleName -> [TypeDef] -> ModuleName -> [Import] -> [TypeDef] -> CtorName -> Code -> [(CtorName, Code)] -> String
-codeTransModule initModuleName rootTypeName prevModuleName prevTypeDefs moduleName imports typeDefs ctorName transCode backwardTransCode = unlines $
+codeTransModule :: ModuleName -> TypeName -> ModuleName -> [TypeDef] -> ModuleName -> [Import] -> [TypeDef] -> [(CtorName, Code)] -> [(CtorName, Code)] -> String
+codeTransModule initModuleName rootTypeName prevModuleName prevTypeDefs moduleName imports typeDefs transCode backwardTransCode = unlines $
   [ printf "module %sTrans" moduleName
   , "  ( transform"
   , "  , transform'"
@@ -177,15 +176,15 @@ codeTransModule initModuleName rootTypeName prevModuleName prevTypeDefs moduleNa
   , printf "transform' :: %s -> CIRC %s.%s" rootTypeName initModuleName rootTypeName
   , printf "transform' a = trans%s' a >>= %sTrans.transform'" rootTypeName prevModuleName
   , printf ""
-  , codeTypeTransforms prevModuleName prevTypeDefs typeDefs (ctorName, transCode) backwardTransCode
+  , codeTypeTransforms prevModuleName prevTypeDefs typeDefs transCode backwardTransCode
   , printf ""
   ]
 
 -- | Codes the type transform function.
-codeTypeTransforms :: ModuleName -> [TypeDef] -> [TypeDef] -> (CtorName, Code) -> [(CtorName, Code)] -> String
+codeTypeTransforms :: ModuleName -> [TypeDef] -> [TypeDef] -> [(CtorName, Code)] -> [(CtorName, Code)] -> String
 codeTypeTransforms prevName prevTypes currTypes forwardTrans backwardTrans =
-  concatMap (codeTypeTransform prevTypes [forwardTrans] (\ t -> "trans" ++ t)        qualified id) [ t | t@(TypeDef n _ _) <- prevTypes, elem n $ map typeDefName currTypes ] ++
-  concatMap (codeTypeTransform currTypes backwardTrans  (\ t -> "trans" ++ t ++ "'") id qualified) [ t | t@(TypeDef n _ _) <- currTypes, elem n $ map typeDefName prevTypes ]
+  concatMap (codeTypeTransform prevTypes forwardTrans  (\ t -> "trans" ++ t)        qualified id) [ t | t@(TypeDef n _ _) <- prevTypes, elem n $ map typeDefName currTypes ] ++
+  concatMap (codeTypeTransform currTypes backwardTrans (\ t -> "trans" ++ t ++ "'") id qualified) [ t | t@(TypeDef n _ _) <- currTypes, elem n $ map typeDefName prevTypes ]
   where
   typeDefName (TypeDef n _ _) = n
   qualified :: String -> String
