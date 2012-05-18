@@ -1,5 +1,5 @@
 name:                circ
-version:             0.0.3
+version:             0.0.4
 synopsis:            A Compiler IR Compiler.
 description:         A Compiler IR Compiler.
 license:             BSD3
