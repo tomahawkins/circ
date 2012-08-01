@@ -28,8 +28,8 @@ import System.Directory
 import System.IO
 import Text.Printf
 
--- | A specification is a module name for the initial type, common imports, the root type, the initial type definitions, and a list of transforms.
-data Spec = Spec Name [Import] TypeName [TypeDef] [Transform]
+-- | A specification is the initial type module name, the initial transform module name, the root type, the initial type definitions, and a list of transforms.
+data Spec = Spec ModuleName ModuleName TypeName [TypeDef] [Transform]
 
 type Name       = String
 type ModuleName = String
@@ -63,10 +63,8 @@ t n = T n []
 
 -- | Compiles a CIRC spec.
 circ :: Spec -> IO ()
-circ (Spec initModuleName initImports rootTypeName typeDefsUnsorted transforms) = do
-  maybeWriteFile (initModuleName ++ ".hs")      $ codeTypeModule      initModuleName initImports typeDefs
-  maybeWriteFile (initModuleName ++ "Trans.hs") $ codeInitTransModule initModuleName rootTypeName
-  foldM_ codeTransform (initModuleName, typeDefs) transforms
+circ (Spec initTypeModuleName initTransModuleName rootTypeName typeDefsUnsorted transforms) = do
+  foldM_ codeTransform (initTransModuleName, typeDefs) transforms
   where
   typeDefs = sortTypeDefs typeDefsUnsorted
 
@@ -74,7 +72,7 @@ circ (Spec initModuleName initImports rootTypeName typeDefsUnsorted transforms) 
   codeTransform (prevModuleName, prevTypeDefs) (Transform moduleName typeImports transImports removedCtors typeRefinements) = do
     maybeWriteFile (moduleName ++ ".hs") $ codeTypeModule moduleName typeImports typeDefs
     maybeWriteFile (moduleName ++ "Trans.hs") $ codeTransModule
-      initModuleName
+      initTypeModuleName
       rootTypeName
       prevModuleName
       prevTypeDefs
@@ -130,25 +128,6 @@ codeTypeModule moduleName imports typeDefs = unlines $
     TList  a      -> "[" ++ codeType a ++ "]"
     TMaybe a      -> "(Maybe " ++ codeType a ++ ")"
     TTuple a      -> "(" ++ intercalate ", " (map codeType a) ++ ")"
-
--- | Code the initial transform module.
-codeInitTransModule :: ModuleName -> TypeName -> String
-codeInitTransModule moduleName rootTypeName = unlines
-  [ printf "module %sTrans" moduleName
-  , printf "  ( transform"
-  , printf "  , transform'"
-  , printf "  ) where"
-  , printf ""
-  , printf "import Language.CIRC.Runtime (CIRC)"
-  , printf "import %s (%s)" moduleName rootTypeName
-  , printf ""
-  , printf "transform :: %s -> CIRC (%s, [%s])" rootTypeName rootTypeName rootTypeName
-  , printf "transform a = return (a, [a])"
-  , printf ""
-  , printf "transform' :: %s -> CIRC %s" rootTypeName rootTypeName
-  , printf "transform' = return"
-  , printf ""
-  ]
 
 -- | Code the module that contains the IR transformations.
 codeTransModule :: ModuleName -> TypeName -> ModuleName -> [TypeDef] -> ModuleName -> [Import] -> [TypeDef] -> [(CtorName, Code)] -> [(CtorName, Code)] -> String
